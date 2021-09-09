@@ -934,6 +934,41 @@ lyb_create_term(struct lyd_lyb_ctx *lybctx, const struct lysc_node *snode, struc
 }
 
 /**
+ * @brief Various procedures for parsed inner node.
+ *
+ * @param[in,out] lybctx LYB context.
+ * @param[in] snode Schema of the inner node.
+ * @param[in] node Parsed inner node.
+ * @return LY_ERR value.
+ */
+static LY_ERR
+lyb_completion_node_inner(struct lyd_lyb_ctx *lybctx, const struct lysc_node *snode, struct lyd_node *node)
+{
+    LY_ERR ret = LY_SUCCESS;
+    uint32_t impl_opts;
+
+    if (!(lybctx->parse_opts & LYD_PARSE_ONLY)) {
+        /* new node validation, autodelete CANNOT occur, all nodes are new */
+        ret = lyd_validate_new(lyd_node_child_p(node), snode, NULL, NULL);
+        LY_CHECK_RET(ret);
+
+        /* add any missing default children */
+        impl_opts = (lybctx->val_opts & LYD_VALIDATE_NO_STATE) ? LYD_IMPLICIT_NO_STATE : 0;
+        ret = lyd_new_implicit_r(node, lyd_node_child_p(node), NULL,
+                NULL, &lybctx->node_when, &lybctx->node_exts,
+                &lybctx->node_types, impl_opts, NULL);
+        LY_CHECK_RET(ret);
+    }
+
+    if (snode->nodetype & (LYS_RPC | LYS_ACTION | LYS_NOTIF)) {
+        /* rememeber the RPC/action/notification */
+        lybctx->op_node = node;
+    }
+
+    return ret;
+}
+
+/**
  * @brief Parse opaq node.
  *
  * @param[in] lybctx LYB context.
@@ -1132,21 +1167,9 @@ lyb_parse_subtree_r(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct 
             LY_CHECK_GOTO(ret, cleanup);
         }
 
-        if (!(lybctx->parse_opts & LYD_PARSE_ONLY)) {
-            /* new node validation, autodelete CANNOT occur, all nodes are new */
-            ret = lyd_validate_new(lyd_node_child_p(node), snode, NULL, NULL);
-            LY_CHECK_GOTO(ret, cleanup);
-
-            /* add any missing default children */
-            ret = lyd_new_implicit_r(node, lyd_node_child_p(node), NULL, NULL, &lybctx->node_when, &lybctx->node_exts,
-                    &lybctx->node_types, (lybctx->val_opts & LYD_VALIDATE_NO_STATE) ? LYD_IMPLICIT_NO_STATE : 0, NULL);
-            LY_CHECK_GOTO(ret, cleanup);
-        }
-
-        if (snode->nodetype & (LYS_RPC | LYS_ACTION | LYS_NOTIF)) {
-            /* rememeber the RPC/action/notification */
-            lybctx->op_node = node;
-        }
+        /* additional procedure for inner node */
+        ret = lyb_completion_node_inner(lybctx, snode, node);
+        LY_CHECK_GOTO(ret, cleanup);
 
         /* complete the node processing */
         lyb_finish_node(lybctx, parent, flags, &meta, &node, first_p, parsed);
