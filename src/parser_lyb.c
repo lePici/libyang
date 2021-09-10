@@ -1509,7 +1509,7 @@ error:
 }
 
 /**
- * @brief Parse segment.
+ * @brief Parse segment (@ref lyb_print_segment()).
  *
  * @param[in] lybctx LYB context.
  * @param[in] parent Data parent of the subtree, must be set if @p first_p is not.

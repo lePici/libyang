@@ -1210,6 +1210,25 @@ lyb_print_node_list(struct ly_out *out, const struct lyd_node *node, struct lyd_
 /**
  * @brief Print segment.
  *
+ * @verbatim
+
+ segment               = model hash node
+ model                 = LYB_NO_MODEL / (model_name_length model_name [revision])
+ node                  = opaq / leaflist / list / any / inner / leaf
+ opaq                  = sb opaq_data *segment se
+ leaflist              = sb *leaf se
+ list                  = sb *(node_header sb *segment se) se
+ any                   = sb node_header anydata_data se
+ inner                 = sb node_header *segment sb
+ leaf                  = leaf_top / leaf_nested
+ leaf_top              = sb node_header term_value se
+ leaf_nested           = node_header term_value
+ node_header           = metadata node_flags
+ sb                    = lyb_write_start_subtree
+ se                    = lyb_write_stop_subtree
+
+ @endverbatim
+ *
  * @param[in] out Out structure.
  * @param[in] node Current data node to print.
  * @param[in,out] sibling_ht Cached hash table for @p node and his siblings.
