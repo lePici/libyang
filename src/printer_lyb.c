@@ -40,8 +40,8 @@
 
 static LY_ERR lyb_print_schema_hash(struct ly_out *out, struct lysc_node *schema, struct hash_table **sibling_ht, struct lylyb_ctx *lybctx);
 static LY_ERR lyb_print_attributes(struct ly_out *out, const struct lyd_node_opaq *node, struct lylyb_ctx *lybctx);
-static LY_ERR lyb_print_general(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx);
-static LY_ERR lyb_print_segment(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht, struct lyd_lyb_ctx *lybctx);
+static LY_ERR lyb_print_node_inner(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx);
+static LY_ERR lyb_print_segment(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht, struct lyd_lyb_ctx *lybctx, const struct lyd_node **printed_node);
 static LY_ERR lyb_print_node_header(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx);
 
 /**
@@ -661,7 +661,7 @@ lyb_print_node_opaq(struct ly_out *out, const struct lyd_node_opaq *opaq, struct
 
     /* recursively write all the descendants */
     LY_LIST_FOR(lyd_child((struct lyd_node *)opaq), node) {
-        LY_CHECK_RET(lyb_print_segment(out, node, &child_ht, lyd_lybctx));
+        LY_CHECK_RET(lyb_print_segment(out, node, &child_ht, lyd_lybctx, &node));
     }
 
     /* finish this subtree */
@@ -1052,7 +1052,7 @@ lyb_print_schema_hash(struct ly_out *out, struct lysc_node *schema, struct hash_
 }
 
 /**
- * @brief General function to print node.
+ * @brief Print inner node.
  *
  * @param[in] out Out structure.
  * @param[in] node Current data node to print.
@@ -1060,9 +1060,9 @@ lyb_print_schema_hash(struct ly_out *out, struct lysc_node *schema, struct hash_
  * @return LY_ERR value.
  */
 static LY_ERR
-lyb_print_general(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx)
+lyb_print_node_inner(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx)
 {
-    struct hash_table *child_ht;
+    struct hash_table *child_ht = NULL;
 
     /* register a new subtree */
     LY_CHECK_RET(lyb_write_start_subtree(out, lybctx->lybctx));
@@ -1070,18 +1070,9 @@ lyb_print_general(struct ly_out *out, const struct lyd_node *node, struct lyd_ly
     /* write necessary basic data */
     LY_CHECK_RET(lyb_print_node_header(out, node, lybctx));
 
-    /* write node content */
-    if (node->schema->nodetype & LYD_NODE_INNER) {
-        child_ht = NULL;
-
-        /* recursively write all the descendants */
-        LY_LIST_FOR(lyd_child(node), node) {
-            LY_CHECK_RET(lyb_print_segment(out, node, &child_ht, lybctx));
-        }
-    } else if (node->schema->nodetype & LYS_LEAFLIST) {
-        LY_CHECK_RET(lyb_print_term_value((struct lyd_node_term *)node, out, lybctx->lybctx));
-    } else {
-        LOGINT_RET(lybctx->lybctx->ctx);
+    /* recursively write all the descendants */
+    LY_LIST_FOR(lyd_child(node), node) {
+        LY_CHECK_RET(lyb_print_segment(out, node, &child_ht, lybctx, &node));
     }
 
     /* finish this subtree */
@@ -1125,6 +1116,44 @@ lyb_print_node_leaf(struct ly_out *out, const struct lyd_node *node, struct lyd_
 }
 
 /**
+ * @brief Print all leaflist nodes which belong to same schema.
+ *
+ * @param[in] out Out structure.
+ * @param[in] node Current data node to print.
+ * @param[in] lybctx LYB context.
+ * @param[out] printed_node Last node that was printed by this function.
+ * @return LY_ERR value.
+ */
+static LY_ERR
+lyb_print_node_leaflist(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx,
+        const struct lyd_node **printed_node)
+{
+    const struct lysc_node *schema;
+
+    /* register a new subtree */
+    LY_CHECK_RET(lyb_write_start_subtree(out, lybctx->lybctx));
+
+    schema = node->schema;
+
+    /* write all the siblings */
+    LY_LIST_FOR(node, node) {
+        if (schema != node->schema) {
+            /* all leaflist nodes was printed */
+            break;
+        }
+
+        /* write leaf data */
+        LY_CHECK_RET(lyb_print_node_leaf(out, node, lybctx));
+        *printed_node = node;
+    }
+
+    /* finish this subtree */
+    LY_CHECK_RET(lyb_write_stop_subtree(out, lybctx->lybctx));
+
+    return LY_SUCCESS;
+}
+
+/**
  * @brief Print segment.
  *
  * @param[in] out Out structure.
@@ -1132,22 +1161,27 @@ lyb_print_node_leaf(struct ly_out *out, const struct lyd_node *node, struct lyd_
  * @param[in,out] sibling_ht Cached hash table for @p node and his siblings.
  * If @p node is the first of the siblings, then @p sibling_ht is NULL.
  * @param[in] lybctx LYB context.
+ * @param[out] printed_node Last node that was printed by this function.
  * @return LY_ERR value.
  */
 static LY_ERR
 lyb_print_segment(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht,
-        struct lyd_lyb_ctx *lybctx)
+        struct lyd_lyb_ctx *lybctx, const struct lyd_node **printed_node)
 {
+    *printed_node = node;
+
     LY_CHECK_RET(lyb_print_segment_header(out, node, sibling_ht, lybctx->lybctx));
 
     if (!node->schema) {
         LY_CHECK_RET(lyb_print_node_opaq(out, (struct lyd_node_opaq *)node, lybctx));
+    } else if (node->schema->nodetype & LYS_LEAFLIST) {
+        LY_CHECK_RET(lyb_print_node_leaflist(out, node, lybctx, printed_node));
     } else if (node->schema->nodetype & LYD_NODE_ANY) {
         LY_CHECK_RET(lyb_print_node_any(out, (struct lyd_node_any *)node, lybctx));
-    } else if (node->schema->nodetype == LYS_LEAF) {
-        LY_CHECK_RET(lyb_print_node_leaf(out, node, lybctx));
+    } else if (node->schema->nodetype & LYD_NODE_INNER) {
+        LY_CHECK_RET(lyb_print_node_inner(out, node, lybctx));
     } else {
-        LY_CHECK_RET(lyb_print_general(out, node, lybctx));
+        LY_CHECK_RET(lyb_print_node_leaf(out, node, lybctx));
     }
 
     return LY_SUCCESS;
@@ -1195,7 +1229,7 @@ lyb_print_data(struct ly_out *out, const struct lyd_node *root, uint32_t options
             prev_mod = root->schema ? root->schema->module : NULL;
         }
 
-        ret = lyb_print_segment(out, root, &top_sibling_ht, lybctx);
+        ret = lyb_print_segment(out, root, &top_sibling_ht, lybctx, &root);
         LY_CHECK_GOTO(ret, cleanup);
 
         if (!(options & LYD_PRINT_WITHSIBLINGS)) {

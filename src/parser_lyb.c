@@ -43,7 +43,7 @@ static LY_ERR _lyd_parse_lyb(const struct ly_ctx *ctx, const struct lysc_ext_ins
         struct lyd_node **first_p, struct ly_in *in, uint32_t parse_opts, uint32_t val_opts, uint32_t int_opts,
         struct ly_set *parsed, struct lyd_ctx **lydctx_p);
 
-static LY_ERR lyb_parse_general(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node *snode, struct lyd_node **first_p, struct ly_set *parsed);
+static LY_ERR lyb_parse_node_inner(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node *snode, struct lyd_node **first_p, struct ly_set *parsed);
 static LY_ERR lyb_parse_node_header(struct lyd_lyb_ctx *lybctx, uint32_t *flags, struct lyd_meta **meta);
 static LY_ERR lyb_parse_segment(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct lyd_node **first_p, struct ly_set *parsed);
 
@@ -1279,7 +1279,7 @@ lyb_parse_segment_header(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, co
 }
 
 /**
- * @brief General function to parse node.
+ * @brief Parse inner node.
  *
  * @param[in] lybctx LYB context.
  * @param[in] parent Data parent of the subtree.
@@ -1289,14 +1289,13 @@ lyb_parse_segment_header(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, co
  * @return LY_ERR value.
  */
 static LY_ERR
-lyb_parse_general(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node *snode,
+lyb_parse_node_inner(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node *snode,
         struct lyd_node **first_p, struct ly_set *parsed)
 {
     LY_ERR ret = LY_SUCCESS;
     struct lyd_node *node = NULL;
     struct lyd_meta *meta = NULL;
     uint32_t flags;
-    const struct ly_ctx *ctx = lybctx->lybctx->ctx;
 
     /* register a new subtree */
     ret = lyb_read_start_subtree(lybctx->lybctx);
@@ -1306,29 +1305,19 @@ lyb_parse_general(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const str
     ret = lyb_parse_node_header(lybctx, &flags, &meta);
     LY_CHECK_GOTO(ret, error);
 
-    if (snode->nodetype & LYD_NODE_INNER) {
-        /* create node */
-        ret = lyd_create_inner(snode, &node);
-        LY_CHECK_GOTO(ret, error);
+    /* create node */
+    ret = lyd_create_inner(snode, &node);
+    LY_CHECK_GOTO(ret, error);
 
-        /* process children */
-        while (LYB_LAST_SUBTREE(lybctx->lybctx).written) {
-            ret = lyb_parse_segment(lybctx, node, NULL, NULL);
-            LY_CHECK_GOTO(ret, error);
-        }
-
-        /* additional procedure for inner node */
-        ret = lyb_completion_node_inner(lybctx, snode, node);
+    /* process children */
+    while (LYB_LAST_SUBTREE(lybctx->lybctx).written) {
+        ret = lyb_parse_segment(lybctx, node, NULL, NULL);
         LY_CHECK_GOTO(ret, error);
-    } else if (snode->nodetype & LYS_LEAFLIST) {
-        /* read value of term node and create it */
-        ret = lyb_create_term(lybctx, snode, &node);
-        LY_CHECK_GOTO(ret, error);
-    } else {
-        LOGINT(ctx);
-        ret = LY_EINT;
-        goto error;
     }
+
+    /* additional procedure for inner node */
+    ret = lyb_completion_node_inner(lybctx, snode, node);
+    LY_CHECK_GOTO(ret, error);
 
     /* register parsed node */
     lyb_finish_node(lybctx, parent, flags, &meta, &node, first_p, parsed);
@@ -1422,6 +1411,39 @@ error:
 }
 
 /**
+ * @brief Parse all leaflist nodes which belong to same schema.
+ *
+ * @param[in] lybctx LYB context.
+ * @param[in] parent Data parent of the subtree.
+ * @param[in] snode Schema of the nodes to be parsed.
+ * @param[in,out] first_p First top-level sibling.
+ * @param[out] parsed Set of all successfully parsed nodes.
+ * @return LY_ERR value.
+ */
+static LY_ERR
+lyb_parse_node_leaflist(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node *snode,
+        struct lyd_node **first_p, struct ly_set *parsed)
+{
+    LY_ERR ret;
+
+    /* register a new subtree */
+    ret = lyb_read_start_subtree(lybctx->lybctx);
+    LY_CHECK_RET(ret);
+
+    /* process all siblings */
+    while (LYB_LAST_SUBTREE(lybctx->lybctx).written) {
+        ret = lyb_parse_node_leaf(lybctx, parent, snode, first_p, parsed);
+        LY_CHECK_RET(ret);
+    }
+
+    /* end the subtree */
+    ret = lyb_read_stop_subtree(lybctx->lybctx);
+    LY_CHECK_RET(ret);
+
+    return ret;
+}
+
+/**
  * @brief Parse segment.
  *
  * @param[in] lybctx LYB context.
@@ -1442,12 +1464,14 @@ lyb_parse_segment(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct ly
 
     if (!snode) {
         ret = lyb_parse_node_opaq(lybctx, parent, first_p, parsed);
+    } else if (snode->nodetype & LYS_LEAFLIST) {
+        ret = lyb_parse_node_leaflist(lybctx, parent, snode, first_p, parsed);
     } else if (snode->nodetype & LYD_NODE_ANY) {
         ret = lyb_parse_node_any(lybctx, parent, snode, first_p, parsed);
-    } else if (snode->nodetype == LYS_LEAF) {
-        ret = lyb_parse_node_leaf(lybctx, parent, snode, first_p, parsed);
+    } else if (snode->nodetype & LYD_NODE_INNER) {
+        ret = lyb_parse_node_inner(lybctx, parent, snode, first_p, parsed);
     } else {
-        ret = lyb_parse_general(lybctx, parent, snode, first_p, parsed);
+        ret = lyb_parse_node_leaf(lybctx, parent, snode, first_p, parsed);
     }
 
     return ret;
