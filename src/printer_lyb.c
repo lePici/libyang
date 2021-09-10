@@ -1154,6 +1154,60 @@ lyb_print_node_leaflist(struct ly_out *out, const struct lyd_node *node, struct 
 }
 
 /**
+ * @brief Print all list nodes which belong to same schema.
+ *
+ * @param[in] out Out structure.
+ * @param[in] node Current data node to print.
+ * @param[in] lybctx LYB context.
+ * @param[out] printed_node Last node that was printed by this function.
+ * @return LY_ERR value.
+ */
+static LY_ERR
+lyb_print_node_list(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx,
+        const struct lyd_node **printed_node)
+{
+    const struct lysc_node *schema;
+    struct hash_table *child_ht = NULL;
+    const struct lyd_node *child_node;
+
+    /* register a new subtree */
+    LY_CHECK_RET(lyb_write_start_subtree(out, lybctx->lybctx));
+
+    schema = node->schema;
+
+    /* write all the siblings */
+    LY_LIST_FOR(node, node) {
+        if (schema != node->schema) {
+            /* all list nodes was printed */
+            break;
+        }
+
+        /* write necessary basic data */
+        LY_CHECK_RET(lyb_print_node_header(out, node, lybctx));
+
+        /* start new subtree */
+        LY_CHECK_RET(lyb_write_start_subtree(out, lybctx->lybctx));
+
+        /* recursively write all the descendants */
+        LY_LIST_FOR(lyd_child(node), child_node) {
+            LY_CHECK_RET(lyb_print_segment(out, child_node, &child_ht,
+                    lybctx, &child_node));
+        }
+        child_ht = NULL;
+
+        /* finish this subtree */
+        LY_CHECK_RET(lyb_write_stop_subtree(out, lybctx->lybctx));
+
+        *printed_node = node;
+    }
+
+    /* finish this subtree */
+    LY_CHECK_RET(lyb_write_stop_subtree(out, lybctx->lybctx));
+
+    return LY_SUCCESS;
+}
+
+/**
  * @brief Print segment.
  *
  * @param[in] out Out structure.
@@ -1176,6 +1230,8 @@ lyb_print_segment(struct ly_out *out, const struct lyd_node *node, struct hash_t
         LY_CHECK_RET(lyb_print_node_opaq(out, (struct lyd_node_opaq *)node, lybctx));
     } else if (node->schema->nodetype & LYS_LEAFLIST) {
         LY_CHECK_RET(lyb_print_node_leaflist(out, node, lybctx, printed_node));
+    } else if (node->schema->nodetype == LYS_LIST) {
+        LY_CHECK_RET(lyb_print_node_list(out, node, lybctx, printed_node));
     } else if (node->schema->nodetype & LYD_NODE_ANY) {
         LY_CHECK_RET(lyb_print_node_any(out, (struct lyd_node_any *)node, lybctx));
     } else if (node->schema->nodetype & LYD_NODE_INNER) {
