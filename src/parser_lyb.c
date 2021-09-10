@@ -43,8 +43,9 @@ static LY_ERR _lyd_parse_lyb(const struct ly_ctx *ctx, const struct lysc_ext_ins
         struct lyd_node **first_p, struct ly_in *in, uint32_t parse_opts, uint32_t val_opts, uint32_t int_opts,
         struct ly_set *parsed, struct lyd_ctx **lydctx_p);
 
-static LY_ERR lyb_parse_subtree_r(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct lyd_node **first_p, struct ly_set *parsed);
+static LY_ERR lyb_parse_subtree_r(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node *snode, struct lyd_node **first_p, struct ly_set *parsed);
 static LY_ERR lyb_parse_node_header(struct lyd_lyb_ctx *lybctx, uint32_t *flags, struct lyd_meta **meta);
+static LY_ERR lyb_parse_segment(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct lyd_node **first_p, struct ly_set *parsed);
 
 void
 lylyb_ctx_free(struct lylyb_ctx *ctx)
@@ -327,6 +328,31 @@ lyb_read_start_subtree(struct lylyb_ctx *lybctx)
 }
 
 /**
+ * @brief Read if model is present.
+ *
+ * If the LYB_NO_MODEL flag is present, it is skipped.
+ *
+ * @param[in] lybctx LYB context.
+ * @return 1 if model with revision is present, otherwise 0.
+ */
+static ly_bool
+lyb_read_if_model_is_present(struct lylyb_ctx *lybctx)
+{
+    uint16_t flag;
+
+    /* Forward read of LYB_NO_MODEL or length of module name. */
+    memcpy(&flag, lybctx->in->current, sizeof flag);
+
+    if (flag == LYB_NO_MODEL) {
+        /* skip LYB_NO_MODEL flag */
+        lyb_read(NULL, sizeof flag, lybctx);
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+/**
  * @brief Parse YANG model info.
  *
  * @param[in] lybctx LYB context.
@@ -338,11 +364,11 @@ static LY_ERR
 lyb_parse_model(struct lylyb_ctx *lybctx, uint32_t parse_options, const struct lys_module **model)
 {
     LY_ERR ret = LY_SUCCESS;
-    const struct lys_module *mod;
+    const struct lys_module *mod = NULL;
     char *mod_name = NULL, mod_rev[LY_REV_SIZE];
     uint16_t rev;
 
-    *model = NULL;
+    LY_CHECK_GOTO(!lyb_read_if_model_is_present(lybctx), cleanup);
 
     /* model name */
     ret = lyb_read_string(&mod_name, 1, lybctx);
@@ -351,8 +377,7 @@ lyb_parse_model(struct lylyb_ctx *lybctx, uint32_t parse_options, const struct l
     /* revision */
     lyb_read_number(&rev, sizeof rev, 2, lybctx);
 
-    if (!mod_name[0]) {
-        /* opaq node, no module */
+    if (!model || !mod_name[0]) {
         goto cleanup;
     }
 
@@ -400,9 +425,10 @@ lyb_parse_model(struct lylyb_ctx *lybctx, uint32_t parse_options, const struct l
         lyb_cache_module_hash(mod);
     }
 
-    *model = mod;
-
 cleanup:
+    if (model) {
+        *model = mod;
+    }
     free(mod_name);
     return ret;
 }
@@ -729,6 +755,8 @@ lyb_parse_schema_hash(struct lyd_lyb_ctx *lybctx, const struct lysc_node *sparen
     uint32_t getnext_opts;
     uint8_t hash_count;
 
+    *snode = NULL;
+
     ret = lyb_read_hashes(lybctx->lybctx, hash, &hash_count);
     LY_CHECK_RET(ret);
 
@@ -737,7 +765,6 @@ lyb_parse_schema_hash(struct lyd_lyb_ctx *lybctx, const struct lysc_node *sparen
         return LY_SUCCESS;
     }
 
-    *snode = NULL;
     getnext_opts = lybctx->int_opts & LYD_INTOPT_REPLY ? LYS_GETNEXT_OUTPUT : 0;
 
     /* find our node with matching hashes */
@@ -1065,7 +1092,7 @@ lyb_parse_node_opaq(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct 
 
     /* process children */
     while (LYB_LAST_SUBTREE(lybctx->lybctx).written) {
-        ret = lyb_parse_subtree_r(lybctx, node, NULL, NULL);
+        ret = lyb_parse_segment(lybctx, node, NULL, NULL);
         LY_CHECK_GOTO(ret, cleanup);
     }
 
@@ -1201,7 +1228,7 @@ lyb_parse_node_header(struct lyd_lyb_ctx *lybctx, uint32_t *flags, struct lyd_me
 }
 
 /**
- * @brief Parse model and hash.
+ * @brief Parse metadata of the segment.
  *
  * @param[in] lybctx LYB context.
  * @param[in] parent Data parent of the subtree.
@@ -1209,7 +1236,7 @@ lyb_parse_node_header(struct lyd_lyb_ctx *lybctx, uint32_t *flags, struct lyd_me
  * @return LY_ERR value.
  */
 static LY_ERR
-lyb_print_model_and_hash(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node **snode)
+lyb_parse_segment_header(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node **snode)
 {
     LY_ERR ret;
     const struct lys_module *mod;
@@ -1236,25 +1263,23 @@ lyb_print_model_and_hash(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, co
  *
  * @param[in] lybctx LYB context.
  * @param[in] parent Data parent of the subtree, must be set if @p first is not.
+ * @param[in] snode Schema of the node to be parsed.
  * @param[in,out] first_p First top-level sibling, must be set if @p parent is not.
  * @param[out] parsed Set of all successfully parsed nodes.
  * @return LY_ERR value.
  */
 static LY_ERR
-lyb_parse_subtree_r(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct lyd_node **first_p, struct ly_set *parsed)
+lyb_parse_subtree_r(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, const struct lysc_node *snode,
+        struct lyd_node **first_p, struct ly_set *parsed)
 {
     LY_ERR ret = LY_SUCCESS;
     struct lyd_node *node = NULL;
-    const struct lysc_node *snode = NULL;
     struct lyd_meta *meta = NULL;
     uint32_t flags;
     const struct ly_ctx *ctx = lybctx->lybctx->ctx;
 
     /* register a new subtree */
     LY_CHECK_GOTO(ret = lyb_read_start_subtree(lybctx->lybctx), cleanup);
-
-    ret = lyb_print_model_and_hash(lybctx, parent, &snode);
-    LY_CHECK_RET(ret);
 
     if (!snode) {
         ret = lyb_parse_node_opaq(lybctx, parent, first_p, parsed);
@@ -1280,7 +1305,7 @@ lyb_parse_subtree_r(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct 
 
         /* process children */
         while (LYB_LAST_SUBTREE(lybctx->lybctx).written) {
-            ret = lyb_parse_subtree_r(lybctx, node, NULL, NULL);
+            ret = lyb_parse_segment(lybctx, node, NULL, NULL);
             LY_CHECK_GOTO(ret, cleanup);
         }
 
@@ -1308,6 +1333,55 @@ stop_subtree:
 cleanup:
     lyd_free_meta_siblings(meta);
     lyd_free_tree(node);
+    return ret;
+}
+
+/**
+ * @brief Skip metadata of the segment.
+ *
+ * @param[in] lybctx LYB context.
+ * @return LY_ERR value.
+ */
+static LY_ERR
+lyb_skip_segment_header(struct lylyb_ctx *lybctx)
+{
+    LY_ERR ret;
+    LYB_HASH hash[LYB_HASH_BITS - 1];
+    uint8_t hash_count;
+
+    /* Skip model. */
+    ret = lyb_parse_model(lybctx, 0, NULL);
+    LY_CHECK_RET(ret);
+
+    /* Skip hash. */
+    ret = lyb_read_hashes(lybctx, hash, &hash_count);
+    LY_CHECK_RET(ret);
+
+    return ret;
+}
+
+/**
+ * @brief Parse segment.
+ *
+ * @param[in] lybctx LYB context.
+ * @param[in] parent Data parent of the subtree, must be set if @p first_p is not.
+ * @param[in,out] first_p First top-level sibling, must be set if @p parent is not.
+ * @param[out] parsed Set of all successfully parsed nodes.
+ * @return LY_ERR value.
+ */
+static LY_ERR
+lyb_parse_segment(struct lyd_lyb_ctx *lybctx, struct lyd_node *parent, struct lyd_node **first_p,
+        struct ly_set *parsed)
+{
+    LY_ERR ret;
+    const struct lysc_node *snode;
+
+    ret = lyb_parse_segment_header(lybctx, parent, &snode);
+    LY_CHECK_RET(ret);
+
+    ret = lyb_parse_subtree_r(lybctx, parent, snode, first_p, parsed);
+    LY_CHECK_RET(ret);
+
     return ret;
 }
 
@@ -1438,7 +1512,7 @@ _lyd_parse_lyb(const struct ly_ctx *ctx, const struct lysc_ext_instance *ext, st
 
     /* read subtree(s) */
     while (lybctx->lybctx->in->current[0]) {
-        rc = lyb_parse_subtree_r(lybctx, parent, first_p, parsed);
+        rc = lyb_parse_segment(lybctx, parent, first_p, parsed);
         LY_CHECK_GOTO(rc, cleanup);
 
         if (!(int_opts & LYD_INTOPT_WITH_SIBLINGS)) {
@@ -1547,6 +1621,9 @@ lyd_lyb_data_length(const char *data)
     }
 
     while (lybctx->in->current[0]) {
+        /* skip segment metadata before subtree */
+        lyb_skip_segment_header(lybctx);
+
         /* register a new subtree */
         ret = lyb_read_start_subtree(lybctx);
         LY_CHECK_GOTO(ret, cleanup);

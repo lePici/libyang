@@ -146,6 +146,10 @@ void lyd_lyb_ctx_free(struct lyd_ctx *lydctx);
 /* Type large enough for all meta data */
 #define LYB_META uint16_t
 
+/* This value is located at the beginning of the segment and must
+ * therefore be non-zero, because zero indicates the end of the LYB data. */
+#define LYB_NO_MODEL UINT16_MAX
+
 /**
  * @brief Get single hash for a schema node to be used for LYB data. Read from cache, if possible.
  *

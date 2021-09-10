@@ -40,7 +40,8 @@
 
 static LY_ERR lyb_print_schema_hash(struct ly_out *out, struct lysc_node *schema, struct hash_table **sibling_ht, struct lylyb_ctx *lybctx);
 static LY_ERR lyb_print_attributes(struct ly_out *out, const struct lyd_node_opaq *node, struct lylyb_ctx *lybctx);
-static LY_ERR lyb_print_subtree(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht, struct lyd_lyb_ctx *lybctx);
+static LY_ERR lyb_print_subtree(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx);
+static LY_ERR lyb_print_segment(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht, struct lyd_lyb_ctx *lybctx);
 static LY_ERR lyb_print_node_header(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx);
 
 /**
@@ -425,13 +426,16 @@ lyb_write_string(const char *str, size_t str_len, ly_bool with_length, struct ly
 static LY_ERR
 lyb_print_model(struct ly_out *out, const struct lys_module *mod, struct lylyb_ctx *lybctx)
 {
+    uint16_t flag;
     uint16_t revision;
 
     /* model name length and model name */
     if (mod) {
         LY_CHECK_RET(lyb_write_string(mod->name, 0, 1, out, lybctx));
     } else {
-        LY_CHECK_RET(lyb_write_string("", 0, 1, out, lybctx));
+        flag = LYB_NO_MODEL;
+        lyb_write_number(flag, sizeof flag, out, lybctx);
+        return LY_SUCCESS;
     }
 
     /* model revision as XXXX XXXX XXXX XXXX (2B) (year is offset from 2000)
@@ -654,7 +658,7 @@ lyb_print_node_opaq(struct ly_out *out, const struct lyd_node_opaq *opaq, struct
 
     /* recursively write all the descendants */
     LY_LIST_FOR(lyd_child((struct lyd_node *)opaq), node) {
-        LY_CHECK_RET(lyb_print_subtree(out, node, &child_ht, lyd_lybctx));
+        LY_CHECK_RET(lyb_print_segment(out, node, &child_ht, lyd_lybctx));
     }
 
     return LY_SUCCESS;
@@ -933,7 +937,7 @@ lyb_print_node_header(struct ly_out *out, const struct lyd_node *node, struct ly
 }
 
 /**
- * @brief Print model and hash.
+ * @brief Print segment header.
  *
  * @param[in] out Out structure.
  * @param[in] node Current data node to print.
@@ -942,7 +946,7 @@ lyb_print_node_header(struct ly_out *out, const struct lyd_node *node, struct ly
  * @return LY_ERR value.
  */
 static LY_ERR
-lyb_print_model_and_hash(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht,
+lyb_print_segment_header(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht,
         struct lylyb_ctx *lybctx)
 {
     /* write model info first, for all opaque and top-level nodes */
@@ -1040,19 +1044,16 @@ lyb_print_schema_hash(struct ly_out *out, struct lysc_node *schema, struct hash_
  *
  * @param[in] out Out structure.
  * @param[in] node Root node of the subtree to print.
- * @param[in,out] sibling_ht Cached hash table for these data siblings, created if NULL.
  * @param[in] lybctx LYB context.
  * @return LY_ERR value.
  */
 static LY_ERR
-lyb_print_subtree(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht, struct lyd_lyb_ctx *lybctx)
+lyb_print_subtree(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx)
 {
     struct hash_table *child_ht = NULL;
 
     /* register a new subtree */
     LY_CHECK_RET(lyb_write_start_subtree(out, lybctx->lybctx));
-
-    LY_CHECK_RET(lyb_print_model_and_hash(out, node, sibling_ht, lybctx->lybctx));
 
     /* write node content */
     if (!node->schema) {
@@ -1072,12 +1073,33 @@ lyb_print_subtree(struct ly_out *out, const struct lyd_node *node, struct hash_t
 
     /* recursively write all the descendants */
     LY_LIST_FOR(lyd_child(node), node) {
-        LY_CHECK_RET(lyb_print_subtree(out, node, &child_ht, lybctx));
+        LY_CHECK_RET(lyb_print_segment(out, node, &child_ht, lybctx));
     }
 
 stop_subtree:
     /* finish this subtree */
     LY_CHECK_RET(lyb_write_stop_subtree(out, lybctx->lybctx));
+
+    return LY_SUCCESS;
+}
+
+/**
+ * @brief Print segment.
+ *
+ * @param[in] out Out structure.
+ * @param[in] node Current data node to print.
+ * @param[in,out] sibling_ht Cached hash table for @p node and his siblings.
+ * If @p node is the first of the siblings, then @p sibling_ht is NULL.
+ * @param[in] lybctx LYB context.
+ * @return LY_ERR value.
+ */
+static LY_ERR
+lyb_print_segment(struct ly_out *out, const struct lyd_node *node, struct hash_table **sibling_ht,
+        struct lyd_lyb_ctx *lybctx)
+{
+    LY_CHECK_RET(lyb_print_segment_header(out, node, sibling_ht, lybctx->lybctx));
+
+    LY_CHECK_RET(lyb_print_subtree(out, node, lybctx));
 
     return LY_SUCCESS;
 }
@@ -1124,7 +1146,8 @@ lyb_print_data(struct ly_out *out, const struct lyd_node *root, uint32_t options
             prev_mod = root->schema ? root->schema->module : NULL;
         }
 
-        LY_CHECK_GOTO(ret = lyb_print_subtree(out, root, &top_sibling_ht, lybctx), cleanup);
+        ret = lyb_print_segment(out, root, &top_sibling_ht, lybctx);
+        LY_CHECK_GOTO(ret, cleanup);
 
         if (!(options & LYD_PRINT_WITHSIBLINGS)) {
             break;
