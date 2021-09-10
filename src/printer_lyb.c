@@ -1078,7 +1078,7 @@ lyb_print_general(struct ly_out *out, const struct lyd_node *node, struct lyd_ly
         LY_LIST_FOR(lyd_child(node), node) {
             LY_CHECK_RET(lyb_print_segment(out, node, &child_ht, lybctx));
         }
-    } else if (node->schema->nodetype & LYD_NODE_TERM) {
+    } else if (node->schema->nodetype & LYS_LEAFLIST) {
         LY_CHECK_RET(lyb_print_term_value((struct lyd_node_term *)node, out, lybctx->lybctx));
     } else {
         LOGINT_RET(lybctx->lybctx->ctx);
@@ -1086,6 +1086,40 @@ lyb_print_general(struct ly_out *out, const struct lyd_node *node, struct lyd_ly
 
     /* finish this subtree */
     LY_CHECK_RET(lyb_write_stop_subtree(out, lybctx->lybctx));
+
+    return LY_SUCCESS;
+}
+
+/**
+ * @brief Print leaf node.
+ *
+ * @param[in] out Out structure.
+ * @param[in] node Current data node to print.
+ * @param[in] lybctx LYB context.
+ * @return LY_ERR value.
+ */
+static LY_ERR
+lyb_print_node_leaf(struct ly_out *out, const struct lyd_node *node, struct lyd_lyb_ctx *lybctx)
+{
+    ly_bool top_level;
+
+    top_level = !node->parent;
+
+    if (top_level) {
+        /* register a new subtree */
+        LY_CHECK_RET(lyb_write_start_subtree(out, lybctx->lybctx));
+    }
+
+    /* write necessary basic data */
+    LY_CHECK_RET(lyb_print_node_header(out, node, lybctx));
+
+    /* write term value */
+    LY_CHECK_RET(lyb_print_term_value((struct lyd_node_term *)node, out, lybctx->lybctx));
+
+    if (top_level) {
+        /* finish this subtree */
+        LY_CHECK_RET(lyb_write_stop_subtree(out, lybctx->lybctx));
+    }
 
     return LY_SUCCESS;
 }
@@ -1110,6 +1144,8 @@ lyb_print_segment(struct ly_out *out, const struct lyd_node *node, struct hash_t
         LY_CHECK_RET(lyb_print_node_opaq(out, (struct lyd_node_opaq *)node, lybctx));
     } else if (node->schema->nodetype & LYD_NODE_ANY) {
         LY_CHECK_RET(lyb_print_node_any(out, (struct lyd_node_any *)node, lybctx));
+    } else if (node->schema->nodetype == LYS_LEAF) {
+        LY_CHECK_RET(lyb_print_node_leaf(out, node, lybctx));
     } else {
         LY_CHECK_RET(lyb_print_general(out, node, lybctx));
     }
