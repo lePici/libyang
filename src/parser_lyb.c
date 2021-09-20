@@ -72,6 +72,29 @@ lyd_lyb_ctx_free(struct lyd_ctx *lydctx)
 }
 
 /**
+ * @brief Read metadata about subtree.
+ *
+ * @param[out] sub Structure in which the metadata will be stored.
+ * @param[in] lybctx LYB context.
+ */
+static void
+lyb_read_subtree_meta(struct lyd_lyb_subtree *sub, struct lylyb_ctx *lybctx)
+{
+    uint8_t meta_buf[LYB_META_BYTES];
+    uint64_t num = 0;
+
+    ly_in_read(lybctx->in, meta_buf, LYB_META_BYTES);
+
+    memcpy(&num, meta_buf, LYB_SIZE_BYTES);
+    sub->written = le64toh(num);
+    memcpy(&num, meta_buf + LYB_SIZE_BYTES, LYB_INCHUNK_BYTES);
+    sub->inner_chunks = le64toh(num);
+
+    /* remember whether there is a following chunk or not */
+    sub->position = (sub->written == LYB_SIZE_MAX ? 1 : 0);
+}
+
+/**
  * @brief Read YANG data from LYB input. Metadata are handled transparently and not returned.
  *
  * @param[in] buf Destination buffer.
@@ -84,7 +107,6 @@ lyb_read(uint8_t *buf, size_t count, struct lylyb_ctx *lybctx)
     LY_ARRAY_COUNT_TYPE u;
     struct lyd_lyb_subtree *empty;
     size_t to_read;
-    uint8_t meta_buf[LYB_META_BYTES];
 
     assert(lybctx);
 
@@ -128,12 +150,7 @@ lyb_read(uint8_t *buf, size_t count, struct lylyb_ctx *lybctx)
 
         if (empty) {
             /* read the next chunk meta information */
-            ly_in_read(lybctx->in, meta_buf, LYB_META_BYTES);
-            empty->written = meta_buf[0];
-            empty->inner_chunks = meta_buf[1];
-
-            /* remember whether there is a following chunk or not */
-            empty->position = (empty->written == LYB_SIZE_MAX ? 1 : 0);
+            lyb_read_subtree_meta(empty, lybctx);
         }
     }
 }
@@ -306,7 +323,6 @@ lyb_read_stop_subtree(struct lylyb_ctx *lybctx)
 static LY_ERR
 lyb_read_start_subtree(struct lylyb_ctx *lybctx)
 {
-    uint8_t meta_buf[LYB_META_BYTES];
     LY_ARRAY_COUNT_TYPE u;
 
     u = LY_ARRAY_COUNT(lybctx->subtrees);
@@ -315,12 +331,8 @@ lyb_read_start_subtree(struct lylyb_ctx *lybctx)
         lybctx->subtree_size = u + LYB_SUBTREE_STEP;
     }
 
-    LY_CHECK_RET(ly_in_read(lybctx->in, meta_buf, LYB_META_BYTES));
-
     LY_ARRAY_INCREMENT(lybctx->subtrees);
-    LYB_LAST_SUBTREE(lybctx).written = meta_buf[0];
-    LYB_LAST_SUBTREE(lybctx).inner_chunks = meta_buf[LYB_SIZE_BYTES];
-    LYB_LAST_SUBTREE(lybctx).position = (LYB_LAST_SUBTREE(lybctx).written == LYB_SIZE_MAX ? 1 : 0);
+    lyb_read_subtree_meta(&LYB_LAST_SUBTREE(lybctx), lybctx);
 
     return LY_SUCCESS;
 }

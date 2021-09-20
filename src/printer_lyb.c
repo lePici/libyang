@@ -227,6 +227,29 @@ lyb_hash_find(struct hash_table *ht, struct lysc_node *node, LYB_HASH *hash_p)
 }
 
 /**
+ * @brief Write metadata about subtrees.
+ *
+ * @param[in] out Out structure.
+ * @param[in] sub Contains metadata that is written.
+ */
+static LY_ERR
+lyb_write_subtree_meta(struct ly_out *out, struct lyd_lyb_subtree *sub)
+{
+    uint8_t meta_buf[LYB_META_BYTES];
+    uint64_t num = 0;
+
+    /* write the meta chunk information */
+    num = htole64(sub->written & LYB_SIZE_MAX);
+    memcpy(meta_buf, &num, LYB_SIZE_BYTES);
+    num = htole64(sub->inner_chunks & LYB_INCHUNK_MAX);
+    memcpy(meta_buf + LYB_SIZE_BYTES, &num, LYB_INCHUNK_BYTES);
+
+    LY_CHECK_RET(ly_write_skipped(out, sub->position, (char *)&meta_buf, LYB_META_BYTES));
+
+    return LY_SUCCESS;
+}
+
+/**
  * @brief Write LYB data fully handling the metadata.
  *
  * @param[in] out Out structure.
@@ -241,7 +264,6 @@ lyb_write(struct ly_out *out, const uint8_t *buf, size_t count, struct lylyb_ctx
     LY_ARRAY_COUNT_TYPE u;
     struct lyd_lyb_subtree *full, *iter;
     size_t to_write;
-    uint8_t meta_buf[LYB_META_BYTES];
 
     while (1) {
         /* check for full data chunks */
@@ -276,9 +298,7 @@ lyb_write(struct ly_out *out, const uint8_t *buf, size_t count, struct lylyb_ctx
 
         if (full) {
             /* write the meta information (inner chunk count and chunk size) */
-            meta_buf[0] = full->written & LYB_BYTE_MASK;
-            meta_buf[1] = full->inner_chunks & LYB_BYTE_MASK;
-            LY_CHECK_RET(ly_write_skipped(out, full->position, (char *)meta_buf, LYB_META_BYTES));
+            LY_CHECK_RET(lyb_write_subtree_meta(out, full));
 
             /* zero written and inner chunks */
             full->written = 0;
@@ -311,12 +331,8 @@ lyb_write(struct ly_out *out, const uint8_t *buf, size_t count, struct lylyb_ctx
 static LY_ERR
 lyb_write_stop_subtree(struct ly_out *out, struct lylyb_ctx *lybctx)
 {
-    uint8_t meta_buf[LYB_META_BYTES];
-
     /* write the meta chunk information */
-    meta_buf[0] = LYB_LAST_SUBTREE(lybctx).written & LYB_BYTE_MASK;
-    meta_buf[1] = LYB_LAST_SUBTREE(lybctx).inner_chunks & LYB_BYTE_MASK;
-    LY_CHECK_RET(ly_write_skipped(out, LYB_LAST_SUBTREE(lybctx).position, (char *)&meta_buf, LYB_META_BYTES));
+    lyb_write_subtree_meta(out, &LYB_LAST_SUBTREE(lybctx));
 
     LY_ARRAY_DECREMENT(lybctx->subtrees);
     return LY_SUCCESS;
